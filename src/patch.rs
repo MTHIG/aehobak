@@ -26,6 +26,7 @@
 use std::hint::assert_unchecked;
 use std::io;
 use std::io::ErrorKind::{InvalidData, UnexpectedEof};
+use std::iter::zip;
 use streamvbyte64::{Coder, Coder0124};
 
 /// Directly apply a compact representation of bsdiff output.
@@ -93,10 +94,10 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
     let mut delta_pos = &mut delta_pos_buf[..0];
     let mut delta_base = 0;
 
-    for (add_tags, (copy_tags, seek_tags)) in add_tags
-        .chunks(8)
-        .zip(copy_tags.chunks(8).zip(seek_tags.chunks(8)))
-    {
+    for (add_tags, (copy_tags, seek_tags)) in zip(
+        add_tags.chunks(8),
+        zip(copy_tags.chunks(8), seek_tags.chunks(8)),
+    ) {
         let mut adds = [0; 32];
         let mut copies = [0; 32];
         let mut seeks = [0; 32];
@@ -128,7 +129,7 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
             let x = *seek;
             *seek = (x >> 1) ^ (x & 1).wrapping_neg()
         }
-        for (&add, (&copy, &seek)) in adds.iter().zip(copies.iter().zip(&seeks)) {
+        for (&add, (&copy, &seek)) in zip(&adds, zip(&copies, &seeks)) {
             let (add, copy, seek) = (add as usize, copy as usize, seek as i32 as i64);
             if new.capacity().wrapping_sub(new.len()) < add {
                 Err(io::Error::from(UnexpectedEof))?;
