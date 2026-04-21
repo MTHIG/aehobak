@@ -73,10 +73,8 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
     let add_data_len = coder.data_len(add_tags);
     if add_data_len
         .checked_add(copy_data_len)
-        .ok_or(InvalidData)?
-        .checked_add(delta_data_len)
-        .ok_or(InvalidData)?
-        .checked_add(seek_data_len)
+        .and_then(|x| x.checked_add(delta_data_len))
+        .and_then(|x| x.checked_add(seek_data_len))
         .ok_or(InvalidData)?
         > data_len
     {
@@ -130,12 +128,20 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
             *seek = (x >> 1) ^ (x & 1).wrapping_neg()
         }
         for (&add, (&copy, &seek)) in zip(&adds, zip(&copies, &seeks)) {
-            let (add, copy, seek) = (add as usize, copy as usize, seek as i32 as i64);
-            if new.capacity().wrapping_sub(new.len()) < add {
-                Err(io::Error::from(UnexpectedEof))?;
+            let (add, copy, seek) = (add as usize, copy as usize, seek as i32 as isize);
+            if new
+                .len()
+                .checked_add(add)
+                .ok_or(io::Error::from(InvalidData))?
+                > new.capacity()
+            {
+                return Err(io::Error::from(UnexpectedEof));
             }
+            let old_cursor_add = old_cursor
+                .checked_add(add)
+                .ok_or(io::Error::from(InvalidData))?;
             new.extend_from_slice(
-                old.get(old_cursor..old_cursor + add)
+                old.get(old_cursor..old_cursor_add)
                     .ok_or(io::Error::from(UnexpectedEof))?,
             );
             'outer: while !delta_diffs.is_empty() {
@@ -178,23 +184,20 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
                 delta_pos = &mut delta_pos[nonzero..]; // remaining positions
                 delta_diffs = &delta_diffs[nonzero..];
             }
-            if new.capacity().wrapping_sub(new.len()) < copy {
+            if new
+                .len()
+                .checked_add(copy)
+                .ok_or(io::Error::from(InvalidData))?
+                > new.capacity()
+            {
                 Err(io::Error::from(UnexpectedEof))?;
             }
             new.extend_from_slice(literals.get(..copy).ok_or(io::Error::from(UnexpectedEof))?);
             literals = &literals[copy..];
             copy_cursor = copy_cursor.wrapping_add(copy);
-            old_cursor = usize::try_from(
-                i64::try_from(
-                    old_cursor
-                        .checked_add(add)
-                        .ok_or(io::Error::from(InvalidData))?,
-                )
-                .map_err(|_| io::Error::from(InvalidData))?
+            old_cursor = (old_cursor_add as isize)
                 .checked_add(seek)
-                .ok_or(io::Error::from(InvalidData))?,
-            )
-            .map_err(|_| io::Error::from(InvalidData))?;
+                .ok_or(io::Error::from(InvalidData))? as usize;
         }
     }
     Ok(())
