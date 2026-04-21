@@ -130,15 +130,13 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
         }
         for (&add, (&copy, &seek)) in adds.iter().zip(copies.iter().zip(&seeks)) {
             let (add, copy, seek) = (add as usize, copy as usize, seek as i32 as i64);
-            let old_slice = old
-                .get(old_cursor..)
-                .ok_or(io::Error::from(UnexpectedEof))?
-                .get(..add)
-                .ok_or(io::Error::from(UnexpectedEof))?;
-            if new.capacity().wrapping_sub(new.len()) < old_slice.len() {
+            if new.capacity().wrapping_sub(new.len()) < add {
                 Err(io::Error::from(UnexpectedEof))?;
             }
-            new.extend_from_slice(old_slice);
+            new.extend_from_slice(
+                old.get(old_cursor..old_cursor + add)
+                    .ok_or(io::Error::from(UnexpectedEof))?,
+            );
             'outer: while !delta_diffs.is_empty() {
                 if delta_pos.is_empty() {
                     let mut window = [0; 8];
@@ -179,11 +177,10 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
                 delta_pos = &mut delta_pos[nonzero..]; // remaining positions
                 delta_diffs = &delta_diffs[nonzero..];
             }
-            let lit_slice = literals.get(..copy).ok_or(io::Error::from(UnexpectedEof))?;
-            if new.capacity().wrapping_sub(new.len()) < lit_slice.len() {
+            if new.capacity().wrapping_sub(new.len()) < copy {
                 Err(io::Error::from(UnexpectedEof))?;
             }
-            new.extend_from_slice(lit_slice);
+            new.extend_from_slice(literals.get(..copy).ok_or(io::Error::from(UnexpectedEof))?);
             literals = &literals[copy..];
             copy_cursor = copy_cursor.wrapping_add(copy);
             old_cursor = usize::try_from(
