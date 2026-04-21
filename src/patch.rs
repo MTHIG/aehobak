@@ -52,8 +52,7 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
     let deltas_div_4 = deltas_len.div_ceil(4);
     let tags_len = controls_div_4
         .checked_mul(3)
-        .ok_or(io::Error::from(InvalidData))?
-        .checked_add(deltas_div_4)
+        .and_then(|x| x.checked_add(deltas_div_4))
         .ok_or(io::Error::from(InvalidData))?;
     debug_assert!(tags_len * 4 >= controls_div_4 * 12);
     unsafe { assert_unchecked(tags_len * 4 >= controls_div_4 * 12) }
