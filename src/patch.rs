@@ -45,29 +45,26 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
     let (mut delta_diffs, patch) = patch.split_at_checked(deltas_len).ok_or(UnexpectedEof)?;
     let (mut literals, patch) = patch.split_at_checked(literals_len).ok_or(UnexpectedEof)?;
 
-    let tags_len = controls
-        .div_ceil(4)
+    // `controls` and `deltas_len` are length of data before streamvbyte
+    // div by 4 to get number of tags (u8)
+    let controls_div_4 = controls.div_ceil(4);
+    let deltas_div_4 = deltas_len.div_ceil(4);
+    let tags_len = controls_div_4
         .checked_mul(3)
         .ok_or(io::Error::from(InvalidData))?
-        .checked_add(deltas_len.div_ceil(4))
+        .checked_add(deltas_div_4)
         .ok_or(io::Error::from(InvalidData))?;
     let u32_seq_len = tags_len
         .checked_mul(4)
         .ok_or(io::Error::from(InvalidData))?;
     // SAFETY: This follows from the checked arithmetic above
-    debug_assert!(u32_seq_len >= controls.div_ceil(4) * 12);
-    unsafe { assert_unchecked(u32_seq_len >= controls.div_ceil(4) * 12) }
+    debug_assert!(u32_seq_len >= controls_div_4 * 12);
+    unsafe { assert_unchecked(u32_seq_len >= controls_div_4 * 12) }
 
     let (tags, patch) = patch.split_at_checked(tags_len).ok_or(UnexpectedEof)?;
-    let (copy_tags, tags) = tags
-        .split_at_checked(controls.div_ceil(4))
-        .ok_or(InvalidData)?;
-    let (mut delta_tags, tags) = tags
-        .split_at_checked(deltas_len.div_ceil(4))
-        .ok_or(InvalidData)?;
-    let (seek_tags, add_tags) = tags
-        .split_at_checked(controls.div_ceil(4))
-        .ok_or(InvalidData)?;
+    let (copy_tags, tags) = tags.split_at_checked(controls_div_4).ok_or(InvalidData)?;
+    let (mut delta_tags, tags) = tags.split_at_checked(deltas_div_4).ok_or(InvalidData)?;
+    let (seek_tags, add_tags) = tags.split_at_checked(controls_div_4).ok_or(InvalidData)?;
 
     let copy_data_len = coder.data_len(copy_tags);
     let delta_data_len = coder.data_len(delta_tags);
