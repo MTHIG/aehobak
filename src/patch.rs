@@ -101,22 +101,27 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
         let mut adds = [0; 32];
         let mut copies = [0; 32];
         let mut seeks = [0; 32];
-        let mut read;
-        read = coder.decode(pad8(&mut window, add_tags), add_data, &mut adds);
-        // SAFETY: This follows from the checked arithmetic above
-        debug_assert!(read <= add_data.len());
-        unsafe { assert_unchecked(read <= add_data.len()) }
-        add_data = &add_data[read..];
-        read = coder.decode(pad8(&mut window, copy_tags), copy_data, &mut copies);
-        // SAFETY: This follows from the checked arithmetic above
-        debug_assert!(read <= copy_data.len());
-        unsafe { assert_unchecked(read <= copy_data.len()) }
-        copy_data = &copy_data[read..];
-        read = coder.decode(pad8(&mut window, seek_tags), seek_data, &mut seeks);
-        // SAFETY: This follows from the checked arithmetic above
-        debug_assert!(read <= seek_data.len());
-        unsafe { assert_unchecked(read <= seek_data.len()) }
-        seek_data = &seek_data[read..];
+        {
+            let read = coder.decode(pad8(&mut window, add_tags), add_data, &mut adds);
+            // SAFETY: This follows from the checked arithmetic above
+            debug_assert!(read <= add_data.len());
+            unsafe { assert_unchecked(read <= add_data.len()) }
+            add_data = &add_data[read..];
+        }
+        {
+            let read = coder.decode(pad8(&mut window, copy_tags), copy_data, &mut copies);
+            // SAFETY: This follows from the checked arithmetic above
+            debug_assert!(read <= copy_data.len());
+            unsafe { assert_unchecked(read <= copy_data.len()) }
+            copy_data = &copy_data[read..];
+        }
+        {
+            let read = coder.decode(pad8(&mut window, seek_tags), seek_data, &mut seeks);
+            // SAFETY: This follows from the checked arithmetic above
+            debug_assert!(read <= seek_data.len());
+            unsafe { assert_unchecked(read <= seek_data.len()) }
+            seek_data = &seek_data[read..];
+        }
         for seek in &mut seeks {
             let x = *seek;
             *seek = (x >> 1) ^ (x & 1).wrapping_neg()
@@ -144,7 +149,8 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
                         delta_tags = &delta_tags[delta_tags.len()..];
                         &window[..]
                     };
-                    read = coder.decode_deltas(delta_base, current, delta_data, &mut delta_pos_buf);
+                    let read =
+                        coder.decode_deltas(delta_base, current, delta_data, &mut delta_pos_buf);
                     // SAFETY: This follows from the checked arithmetic above
                     debug_assert!(read <= delta_data.len());
                     unsafe { assert_unchecked(read <= delta_data.len()) }
