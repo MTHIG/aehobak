@@ -89,7 +89,6 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
     let mut old_cursor: usize = 0;
     let mut copy_cursor: usize = 0;
 
-    let mut window = [0; 8];
     let mut delta_pos_buf = [0; 32];
     let mut delta_pos = &mut delta_pos_buf[..0];
     let mut delta_base = 0;
@@ -102,6 +101,7 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
         let mut copies = [0; 32];
         let mut seeks = [0; 32];
         {
+            let mut window = [0; 8];
             let read = coder.decode(pad8(&mut window, add_tags), add_data, &mut adds);
             // SAFETY: This follows from the checked arithmetic above
             debug_assert!(read <= add_data.len());
@@ -109,6 +109,7 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
             add_data = &add_data[read..];
         }
         {
+            let mut window = [0; 8];
             let read = coder.decode(pad8(&mut window, copy_tags), copy_data, &mut copies);
             // SAFETY: This follows from the checked arithmetic above
             debug_assert!(read <= copy_data.len());
@@ -116,6 +117,7 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
             copy_data = &copy_data[read..];
         }
         {
+            let mut window = [0; 8];
             let read = coder.decode(pad8(&mut window, seek_tags), seek_data, &mut seeks);
             // SAFETY: This follows from the checked arithmetic above
             debug_assert!(read <= seek_data.len());
@@ -139,12 +141,12 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
             new.extend_from_slice(old_slice);
             'outer: while !delta_diffs.is_empty() {
                 if delta_pos.is_empty() {
+                    let mut window = [0; 8];
                     let current = if delta_tags.len() >= 8 {
                         let window = &delta_tags[..8];
                         delta_tags = &delta_tags[8..];
                         window
                     } else {
-                        window = [0; 8];
                         window[..delta_tags.len()].copy_from_slice(delta_tags);
                         delta_tags = &delta_tags[delta_tags.len()..];
                         &window[..]
