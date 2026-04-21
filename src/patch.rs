@@ -148,9 +148,10 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
                 if delta_pos.is_empty() {
                     let mut window = [0; 8];
                     let current = if delta_tags.len() >= 8 {
-                        let window = &delta_tags[..8];
-                        delta_tags = &delta_tags[8..];
-                        window
+                        let (to_decode, delta_tags_rest) =
+                            delta_tags.split_at_checked(8).ok_or(UnexpectedEof)?;
+                        delta_tags = delta_tags_rest;
+                        to_decode
                     } else {
                         window[..delta_tags.len()].copy_from_slice(delta_tags);
                         delta_tags = &delta_tags[delta_tags.len()..];
@@ -192,8 +193,13 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
             {
                 Err(io::Error::from(UnexpectedEof))?;
             }
-            new.extend_from_slice(literals.get(..copy).ok_or(io::Error::from(UnexpectedEof))?);
-            literals = &literals[copy..];
+            literals = {
+                let (to_extend, literals_rest) = literals
+                    .split_at_checked(copy)
+                    .ok_or(io::Error::from(UnexpectedEof))?;
+                new.extend_from_slice(to_extend);
+                literals_rest
+            };
             copy_cursor = copy_cursor.wrapping_add(copy);
             old_cursor = (old_cursor_add as isize)
                 .checked_add(seek)
