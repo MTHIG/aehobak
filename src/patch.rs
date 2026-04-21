@@ -55,12 +55,8 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
         .ok_or(io::Error::from(InvalidData))?
         .checked_add(deltas_div_4)
         .ok_or(io::Error::from(InvalidData))?;
-    let u32_seq_len = tags_len
-        .checked_mul(4)
-        .ok_or(io::Error::from(InvalidData))?;
-    // SAFETY: This follows from the checked arithmetic above
-    debug_assert!(u32_seq_len >= controls_div_4 * 12);
-    unsafe { assert_unchecked(u32_seq_len >= controls_div_4 * 12) }
+    debug_assert!(tags_len * 4 >= controls_div_4 * 12);
+    unsafe { assert_unchecked(tags_len * 4 >= controls_div_4 * 12) }
 
     let (tags, patch) = patch.split_at_checked(tags_len).ok_or(UnexpectedEof)?;
     let (copy_tags, tags) = tags.split_at_checked(controls_div_4).ok_or(InvalidData)?;
