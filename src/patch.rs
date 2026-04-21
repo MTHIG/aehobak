@@ -105,21 +105,17 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
         let mut copies = [0; 32];
         let mut seeks = [0; 32];
         let mut read;
-        let mut tags;
-        tags = pad8(&mut window, add_tags);
-        read = coder.decode(tags, add_data, &mut adds);
+        read = coder.decode(pad8(&mut window, add_tags), add_data, &mut adds);
         // SAFETY: This follows from the checked arithmetic above
         debug_assert!(read <= add_data.len());
         unsafe { assert_unchecked(read <= add_data.len()) }
         add_data = &add_data[read..];
-        tags = pad8(&mut window, copy_tags);
-        read = coder.decode(tags, copy_data, &mut copies);
+        read = coder.decode(pad8(&mut window, copy_tags), copy_data, &mut copies);
         // SAFETY: This follows from the checked arithmetic above
         debug_assert!(read <= copy_data.len());
         unsafe { assert_unchecked(read <= copy_data.len()) }
         copy_data = &copy_data[read..];
-        tags = pad8(&mut window, seek_tags);
-        read = coder.decode(tags, seek_data, &mut seeks);
+        read = coder.decode(pad8(&mut window, seek_tags), seek_data, &mut seeks);
         // SAFETY: This follows from the checked arithmetic above
         debug_assert!(read <= seek_data.len());
         unsafe { assert_unchecked(read <= seek_data.len()) }
@@ -141,7 +137,7 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
             new.extend_from_slice(old_slice);
             'outer: while !delta_diffs.is_empty() {
                 if delta_pos.is_empty() {
-                    tags = if delta_tags.len() >= 8 {
+                    let current = if delta_tags.len() >= 8 {
                         let window = &delta_tags[..8];
                         delta_tags = &delta_tags[8..];
                         window
@@ -151,7 +147,7 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
                         delta_tags = &delta_tags[delta_tags.len()..];
                         &window[..]
                     };
-                    read = coder.decode_deltas(delta_base, tags, delta_data, &mut delta_pos_buf);
+                    read = coder.decode_deltas(delta_base, current, delta_data, &mut delta_pos_buf);
                     // SAFETY: This follows from the checked arithmetic above
                     debug_assert!(read <= delta_data.len());
                     unsafe { assert_unchecked(read <= delta_data.len()) }
