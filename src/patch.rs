@@ -31,31 +31,19 @@ use streamvbyte64::{Coder, Coder0124};
 /// Directly apply a compact representation of bsdiff output.
 /// Attempts to fill `new` beyond its capacity will result in `Err`.
 #[allow(clippy::ptr_arg)]
-pub fn patch(old: &[u8], mut patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
-    let prefix_tag = patch.get(..1).ok_or(io::Error::from(UnexpectedEof))?;
-    patch = &patch[1..];
-
+pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
     let coder = Coder0124::new();
+    let (prefix_tag, patch) = patch.split_at_checked(1).ok_or(UnexpectedEof)?;
     let prefix_len = coder.data_len(prefix_tag);
-    if patch.len() < prefix_len {
-        return Err(io::Error::from(UnexpectedEof));
-    }
+    let (prefix_data, patch) = patch.split_at_checked(prefix_len).ok_or(UnexpectedEof)?;
     let (deltas_len, literals_len, controls, data_len) = {
         let mut v = [0u32; 4];
-        coder.decode(prefix_tag, patch, &mut v);
+        coder.decode(prefix_tag, prefix_data, &mut v);
         (v[0] as usize, v[1] as usize, v[2] as usize, v[3] as usize)
     };
-    patch = &patch[prefix_len..];
 
-    let mut delta_diffs = patch
-        .get(..deltas_len)
-        .ok_or(io::Error::from(UnexpectedEof))?;
-    patch = &patch[deltas_len..];
-
-    let mut literals = patch
-        .get(..literals_len)
-        .ok_or(io::Error::from(UnexpectedEof))?;
-    patch = &patch[literals_len..];
+    let (mut delta_diffs, patch) = patch.split_at_checked(deltas_len).ok_or(UnexpectedEof)?;
+    let (mut literals, patch) = patch.split_at_checked(literals_len).ok_or(UnexpectedEof)?;
 
     let tags_len = controls
         .div_ceil(4)
@@ -70,36 +58,36 @@ pub fn patch(old: &[u8], mut patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> 
     debug_assert!(u32_seq_len >= controls.div_ceil(4) * 12);
     unsafe { assert_unchecked(u32_seq_len >= controls.div_ceil(4) * 12) }
 
-    let mut tags = patch
-        .get(..tags_len)
-        .ok_or(io::Error::from(UnexpectedEof))?;
-    patch = &patch[tags_len..];
-    let (copy_tags, mut delta_tags, seek_tags, add_tags);
-    (copy_tags, tags) = tags.split_at(controls.div_ceil(4));
-    (delta_tags, tags) = tags.split_at(deltas_len.div_ceil(4));
-    (seek_tags, add_tags) = tags.split_at(controls.div_ceil(4));
+    let (tags, patch) = patch.split_at_checked(tags_len).ok_or(UnexpectedEof)?;
+    let (copy_tags, tags) = tags
+        .split_at_checked(controls.div_ceil(4))
+        .ok_or(InvalidData)?;
+    let (mut delta_tags, tags) = tags
+        .split_at_checked(deltas_len.div_ceil(4))
+        .ok_or(InvalidData)?;
+    let (seek_tags, add_tags) = tags
+        .split_at_checked(controls.div_ceil(4))
+        .ok_or(InvalidData)?;
 
     let copy_data_len = coder.data_len(copy_tags);
     let delta_data_len = coder.data_len(delta_tags);
     let seek_data_len = coder.data_len(seek_tags);
     let add_data_len = coder.data_len(add_tags);
-    if patch.len() < data_len
-        || add_data_len
-            .checked_add(copy_data_len)
-            .ok_or(io::Error::from(InvalidData))?
-            .checked_add(delta_data_len)
-            .ok_or(io::Error::from(InvalidData))?
-            .checked_add(seek_data_len)
-            .ok_or(io::Error::from(InvalidData))?
-            > data_len
+    if add_data_len
+        .checked_add(copy_data_len)
+        .ok_or(InvalidData)?
+        .checked_add(delta_data_len)
+        .ok_or(InvalidData)?
+        .checked_add(seek_data_len)
+        .ok_or(InvalidData)?
+        > data_len
     {
         return Err(io::Error::from(UnexpectedEof));
     }
-    let mut data = &patch[..data_len];
-    let (mut copy_data, mut delta_data, mut seek_data, mut add_data);
-    (copy_data, data) = data.split_at(copy_data_len);
-    (delta_data, data) = data.split_at(delta_data_len);
-    (seek_data, add_data) = data.split_at(seek_data_len);
+    let (data, _) = patch.split_at_checked(data_len).ok_or(UnexpectedEof)?;
+    let (mut copy_data, data) = data.split_at_checked(copy_data_len).ok_or(InvalidData)?;
+    let (mut delta_data, data) = data.split_at_checked(delta_data_len).ok_or(InvalidData)?;
+    let (mut seek_data, mut add_data) = data.split_at_checked(seek_data_len).ok_or(InvalidData)?;
 
     let mut old_cursor: usize = 0;
     let mut copy_cursor: usize = 0;
