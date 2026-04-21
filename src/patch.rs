@@ -156,24 +156,27 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
                     // SAFETY: This follows from the checked arithmetic above
                     debug_assert!(read <= delta_data.len());
                     unsafe { assert_unchecked(read <= delta_data.len()) }
-                    delta_pos = &mut delta_pos_buf[..];
-                    for (idx, pos) in delta_pos.iter_mut().enumerate() {
+                    for (idx, pos) in delta_pos_buf.iter_mut().enumerate() {
                         *pos = (*pos).wrapping_add(idx as u32);
                     }
-                    delta_base = delta_pos.last().unwrap() + 1;
+                    delta_base = {
+                        let [.., last] = delta_pos_buf;
+                        last + 1
+                    };
+                    delta_pos = &mut delta_pos_buf[..]; // whole buffer
                     delta_data = &delta_data[read..];
                 }
                 let nonzero = delta_diffs.len().min(delta_pos.len());
                 for i in 0..nonzero {
                     let delta_cursor = copy_cursor.wrapping_add(delta_pos[i] as usize);
                     if delta_cursor >= new.len() {
-                        delta_pos = &mut delta_pos[i..];
+                        delta_pos = &mut delta_pos[i..]; // remaining positions
                         delta_diffs = &delta_diffs[i..];
                         break 'outer;
                     }
                     new[delta_cursor] = new[delta_cursor].wrapping_add(delta_diffs[i]);
                 }
-                delta_pos = &mut delta_pos[nonzero..];
+                delta_pos = &mut delta_pos[nonzero..]; // remaining positions
                 delta_diffs = &delta_diffs[nonzero..];
             }
             let lit_slice = literals.get(..copy).ok_or(io::Error::from(UnexpectedEof))?;
