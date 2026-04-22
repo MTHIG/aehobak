@@ -31,8 +31,30 @@ use streamvbyte64::{Coder, Coder0124};
 
 /// Directly apply a compact representation of bsdiff output.
 /// Attempts to fill `new` beyond its capacity will result in `Err`.
-#[allow(clippy::ptr_arg)]
+///
+/// This function is leaved for compatibility reason. Migrate to `patch_into` if possible.
 pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
+    let start = new.len();
+    let spare = new.spare_capacity_mut();
+    let spare = unsafe {
+        // SAFETY: `MaybeUninit<u8>` has the same layout as `u8`, and the helper
+        // only writes initialized bytes within this spare region.
+        std::slice::from_raw_parts_mut(spare.as_mut_ptr().cast::<u8>(), spare.len())
+    };
+    let written = patch_into(old, patch, spare)?;
+    let new_len = start
+        .checked_add(written)
+        .ok_or(io::Error::from(InvalidData))?;
+    unsafe {
+        // SAFETY: `patch_inner` reported how many bytes it initialized in `spare`.
+        new.set_len(new_len);
+    }
+    Ok(())
+}
+
+/// Directly apply a compact representation of bsdiff output.
+/// Attempts to fill `new` beyond its length will result in `Err`.
+pub fn patch_into(old: &[u8], patch: &[u8], new: &mut [u8]) -> io::Result<usize> {
     let coder = Coder0124::new();
     let (prefix_tag, patch) = patch.split_at_checked(1).ok_or(UnexpectedEof)?;
     let prefix_len = coder.data_len(prefix_tag);
@@ -82,6 +104,7 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
 
     let mut old_cursor: usize = 0;
     let mut copy_cursor: usize = 0;
+    let mut new_cursor: usize = 0;
 
     let mut delta_pos_buf = [0; 32];
     let mut delta_pos = &mut delta_pos_buf[..0];
@@ -124,21 +147,19 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
         }
         for (&add, (&copy, &seek)) in zip(&adds, zip(&copies, &seeks)) {
             let (add, copy, seek) = (add as usize, copy as usize, seek as i32 as isize);
-            if new
-                .len()
+            let add_end = new_cursor
                 .checked_add(add)
-                .ok_or(io::Error::from(InvalidData))?
-                > new.capacity()
-            {
-                return Err(io::Error::from(UnexpectedEof));
-            }
+                .ok_or(io::Error::from(InvalidData))?;
             let old_cursor_add = old_cursor
                 .checked_add(add)
                 .ok_or(io::Error::from(InvalidData))?;
-            new.extend_from_slice(
-                old.get(old_cursor..old_cursor_add)
-                    .ok_or(io::Error::from(UnexpectedEof))?,
-            );
+            let old_slice = old
+                .get(old_cursor..old_cursor_add)
+                .ok_or(io::Error::from(UnexpectedEof))?;
+            new.get_mut(new_cursor..add_end)
+                .ok_or(io::Error::from(UnexpectedEof))?
+                .copy_from_slice(old_slice);
+            let delta_limit = add_end;
             'outer: while !delta_diffs.is_empty() {
                 if delta_pos.is_empty() {
                     let mut window = [0; 8];
@@ -170,7 +191,7 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
                 let nonzero = delta_diffs.len().min(delta_pos.len());
                 for i in 0..nonzero {
                     let delta_cursor = copy_cursor.wrapping_add(delta_pos[i] as usize);
-                    if delta_cursor >= new.len() {
+                    if delta_cursor >= delta_limit {
                         delta_pos = &mut delta_pos[i..]; // remaining positions
                         delta_diffs = &delta_diffs[i..];
                         break 'outer;
@@ -180,28 +201,24 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
                 delta_pos = &mut delta_pos[nonzero..]; // remaining positions
                 delta_diffs = &delta_diffs[nonzero..];
             }
-            if new
-                .len()
+            let copy_end = add_end
                 .checked_add(copy)
-                .ok_or(io::Error::from(InvalidData))?
-                > new.capacity()
-            {
-                Err(io::Error::from(UnexpectedEof))?;
-            }
-            literals = {
-                let (to_extend, literals_rest) = literals
-                    .split_at_checked(copy)
-                    .ok_or(io::Error::from(UnexpectedEof))?;
-                new.extend_from_slice(to_extend);
-                literals_rest
-            };
+                .ok_or(io::Error::from(InvalidData))?;
+            let (to_copy, literals_rest) = literals
+                .split_at_checked(copy)
+                .ok_or(io::Error::from(UnexpectedEof))?;
+            new.get_mut(add_end..copy_end)
+                .ok_or(io::Error::from(UnexpectedEof))?
+                .copy_from_slice(to_copy);
+            literals = literals_rest;
+            new_cursor = copy_end;
             copy_cursor = copy_cursor.wrapping_add(copy);
             old_cursor = (old_cursor_add as isize)
                 .checked_add(seek)
                 .ok_or(io::Error::from(InvalidData))? as usize;
         }
     }
-    Ok(())
+    Ok(new_cursor)
 }
 
 #[inline(always)]
