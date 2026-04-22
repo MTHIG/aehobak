@@ -87,7 +87,12 @@ fn suf_sort_naive(old: &[u8]) -> Result<Box<[u32]>> {
 #[cfg(not(miri))]
 fn sais(old: &[u8]) -> Result<Box<[u32]>> {
     ensure!(old.len() <= i32::MAX as usize, "input too large");
+    #[cfg(feature = "divsufsort")]
+    let (_, sa) = divsufsort::sort(old).into_parts();
+    #[cfg(all(not(feature = "divsufsort"), feature = "cdivsufsort"))]
     let (_, sa) = cdivsufsort::sort(old).into_parts();
+    #[cfg(all(not(miri), not(feature = "divsufsort"), not(feature = "cdivsufsort")))]
+    compile_error!("Either feature \"divsufsort\" or \"cdivsufsort\" must be enabled.");
     // SAFETY: i32 to u32 transmute is safe; non-negative values
     let sa: Vec<u32> = unsafe { core::mem::transmute(sa) };
     Ok(sa.into_boxed_slice())
