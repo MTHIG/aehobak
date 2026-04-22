@@ -25,7 +25,7 @@
 
 use std::hint::assert_unchecked;
 use std::io;
-use std::io::ErrorKind::{InvalidData, UnexpectedEof};
+use std::io::ErrorKind::{InvalidData, InvalidInput, UnexpectedEof};
 use std::iter::zip;
 use streamvbyte64::{Coder, Coder0124};
 
@@ -33,6 +33,8 @@ use streamvbyte64::{Coder, Coder0124};
 /// Attempts to fill `new` beyond its capacity will result in `Err`.
 ///
 /// This function is leaved for compatibility reason. Migrate to `patch_into` if possible.
+///
+/// See [`patch_into`] for the error contract.
 pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
     let start = new.len();
     let spare = new.spare_capacity_mut();
@@ -54,6 +56,11 @@ pub fn patch(old: &[u8], patch: &[u8], new: &mut Vec<u8>) -> io::Result<()> {
 
 /// Directly apply a compact representation of bsdiff output.
 /// Attempts to fill `new` beyond its length will result in `Err`.
+///
+/// Error kinds:
+/// - [`UnexpectedEof`](io::ErrorKind::UnexpectedEof): `patch` is truncated.
+/// - [`InvalidData`](io::ErrorKind::InvalidData): `patch` is malformed or incompatible with `old`.
+/// - [`InvalidInput`](io::ErrorKind::InvalidInput): `new` is too short for the patched output.
 pub fn patch_into(old: &[u8], patch: &[u8], new: &mut [u8]) -> io::Result<usize> {
     let coder = Coder0124::new();
     let (prefix_tag, patch) = patch.split_at_checked(1).ok_or(UnexpectedEof)?;
@@ -95,7 +102,7 @@ pub fn patch_into(old: &[u8], patch: &[u8], new: &mut [u8]) -> io::Result<usize>
         .ok_or(InvalidData)?
         > data_len
     {
-        return Err(io::Error::from(UnexpectedEof));
+        return Err(io::Error::from(InvalidData));
     }
     let (data, _) = patch.split_at_checked(data_len).ok_or(UnexpectedEof)?;
     let (mut copy_data, data) = data.split_at_checked(copy_data_len).ok_or(InvalidData)?;
@@ -155,9 +162,9 @@ pub fn patch_into(old: &[u8], patch: &[u8], new: &mut [u8]) -> io::Result<usize>
                 .ok_or(io::Error::from(InvalidData))?;
             let old_slice = old
                 .get(old_cursor..old_cursor_add)
-                .ok_or(io::Error::from(UnexpectedEof))?;
+                .ok_or(io::Error::from(InvalidData))?;
             new.get_mut(new_cursor..add_end)
-                .ok_or(io::Error::from(UnexpectedEof))?
+                .ok_or(io::Error::from(InvalidInput))?
                 .copy_from_slice(old_slice);
             let delta_limit = add_end;
             'outer: while !delta_diffs.is_empty() {
@@ -165,7 +172,7 @@ pub fn patch_into(old: &[u8], patch: &[u8], new: &mut [u8]) -> io::Result<usize>
                     let mut window = [0; 8];
                     let current = if delta_tags.len() >= 8 {
                         let (to_decode, delta_tags_rest) =
-                            delta_tags.split_at_checked(8).ok_or(UnexpectedEof)?;
+                            delta_tags.split_at_checked(8).ok_or(InvalidData)?;
                         delta_tags = delta_tags_rest;
                         to_decode
                     } else {
@@ -208,13 +215,13 @@ pub fn patch_into(old: &[u8], patch: &[u8], new: &mut [u8]) -> io::Result<usize>
                 .split_at_checked(copy)
                 .ok_or(io::Error::from(UnexpectedEof))?;
             new.get_mut(add_end..copy_end)
-                .ok_or(io::Error::from(UnexpectedEof))?
+                .ok_or(io::Error::from(InvalidInput))?
                 .copy_from_slice(to_copy);
             literals = literals_rest;
             new_cursor = copy_end;
             copy_cursor = copy_cursor.wrapping_add(copy);
-            old_cursor = (old_cursor_add as isize)
-                .checked_add(seek)
+            old_cursor = old_cursor_add
+                .checked_add_signed(seek)
                 .ok_or(io::Error::from(InvalidData))? as usize;
         }
     }
