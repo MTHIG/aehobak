@@ -222,7 +222,7 @@ pub fn patch_into(old: &[u8], patch: &[u8], new: &mut [u8]) -> io::Result<usize>
             copy_cursor = copy_cursor.wrapping_add(copy);
             old_cursor = old_cursor_add
                 .checked_add_signed(seek)
-                .ok_or(io::Error::from(InvalidData))? as usize;
+                .ok_or(io::Error::from(InvalidData))?;
         }
     }
     Ok(new_cursor)
