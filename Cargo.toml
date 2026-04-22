@@ -20,7 +20,7 @@ streamvbyte64 = "0.2.0"
 anyhow = "1.0"
 
 [features]
-default = ["divsufsort-rs", "divsufsort-rs-rayon"]
+default = ["divsufsort-rs"]
 divsufsort = ["dep:divsufsort"]
 cdivsufsort = ["dep:cdivsufsort"]
 divsufsort-rs = ["dep:divsufsort-rs"]
