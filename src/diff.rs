@@ -135,6 +135,10 @@ fn mismatch(old: &[u8], new: &[u8]) -> usize {
     i
 }
 
+const SMALL_MATCH: usize = 12;
+const MISMATCH_THRESHOLD: usize = 8;
+const LONG_SUFFIX: usize = 256;
+
 struct ScanState<'a> {
     sa: &'a [u32],
     old: &'a [u8],
@@ -168,10 +172,19 @@ impl<'a> ScanState<'a> {
         self.scan >= self.new.len()
     }
 
+    #[inline(always)]
+    fn match_is_redundant(len: usize, similar: usize) -> bool {
+        similar == len || len <= SMALL_MATCH || len <= similar + MISMATCH_THRESHOLD
+    }
+
     fn find_best_match(&self) -> (usize, usize) {
+        self.find_best_match_at(self.scan)
+    }
+
+    fn find_best_match_at(&self, scan: usize) -> (usize, usize) {
         let mut sa = self.sa;
-        // SAFETY: From !done(), scan <= new.len()
-        let new = unsafe { self.new.get_unchecked(self.scan..) };
+        // SAFETY: callers ensure `scan <= new.len()`
+        let new = unsafe { self.new.get_unchecked(scan..) };
 
         while sa.len() > 2 {
             let pos = (sa.len() - 1) / 2;
@@ -215,6 +228,82 @@ impl<'a> ScanState<'a> {
         }
     }
 
+    #[inline(always)]
+    fn advance_scan(&mut self, step: usize, score: &mut usize) {
+        for idx in self.scan..self.scan.saturating_add(step).min(self.new.len()) {
+            let old_idx = idx.wrapping_add_signed(self.last_offset);
+            if old_idx < self.old.len() && self.old[old_idx] == self.new[idx] {
+                *score = score.saturating_sub(1);
+            }
+        }
+        self.scan += step;
+    }
+
+    #[inline(always)]
+    fn similar_suffix_match(
+        &self,
+        prev_scan: usize,
+        prev_pos: usize,
+        prev_len: usize,
+        scan: usize,
+        len: usize,
+    ) -> usize {
+        let delta = match scan.checked_sub(prev_scan) {
+            Some(delta) if delta < prev_len => delta,
+            _ => return 0,
+        };
+        let old_start = match prev_pos.checked_add(delta) {
+            Some(old_start) if old_start < self.old.len() => old_start,
+            _ => return 0,
+        };
+        mismatch(unsafe { self.old.get_unchecked(old_start..) }, unsafe {
+            self.new.get_unchecked(scan..)
+        })
+        .min(len)
+    }
+
+    #[inline(always)]
+    fn binary_search_suffix_skip(
+        &self,
+        prev_scan: usize,
+        prev_pos: usize,
+        prev_len: usize,
+        scan: usize,
+        len: usize,
+        similar: usize,
+    ) -> usize {
+        if len <= LONG_SUFFIX || similar <= len {
+            return len;
+        }
+
+        let max_step = similar.min(self.new.len().saturating_sub(scan));
+        let mut best = len;
+        let mut low = len;
+        let mut high = max_step;
+
+        while low <= high {
+            let mid = low + (high - low) / 2;
+            let future_scan = scan + mid;
+            if future_scan >= self.new.len() {
+                high = mid.saturating_sub(1);
+                continue;
+            }
+
+            let (_future_pos, future_len) = self.find_best_match_at(future_scan);
+            let future_similar =
+                self.similar_suffix_match(prev_scan, prev_pos, prev_len, future_scan, future_len);
+
+            if future_len != 0 && Self::match_is_redundant(future_len, future_similar) {
+                best = mid;
+                low = mid + 1;
+            } else {
+                high = mid.saturating_sub(1);
+            }
+        }
+
+        best
+    }
+
     #[inline(never)]
     fn advance(&mut self) -> bool {
         debug_assert!(self.scan <= self.new.len());
@@ -222,6 +311,7 @@ impl<'a> ScanState<'a> {
         self.scan += self.len;
         let mut score = 0;
         let mut subscan = self.scan;
+        let mut prev_match = None;
 
         while self.scan < self.new.len() {
             (self.pos, self.len) = self.find_best_match();
@@ -236,15 +326,31 @@ impl<'a> ScanState<'a> {
                 subscan += 1;
             }
 
+            if self.len == 0 {
+                prev_match = None;
+                self.advance_scan(1, &mut score);
+                continue;
+            }
+
+            if let Some((prev_scan, prev_pos, prev_len)) = prev_match {
+                let similar =
+                    self.similar_suffix_match(prev_scan, prev_pos, prev_len, self.scan, self.len);
+                if Self::match_is_redundant(self.len, similar) {
+                    prev_match = Some((self.scan, self.pos, self.len));
+                    let step = self.binary_search_suffix_skip(
+                        prev_scan, prev_pos, prev_len, self.scan, self.len, similar,
+                    );
+                    self.advance_scan(step, &mut score);
+                    continue;
+                }
+            }
+
             if (self.len == score && self.len != 0) || self.len > score + 8 {
                 break;
             }
 
-            let idx = self.scan.wrapping_add_signed(self.last_offset);
-            if idx < self.old.len() && self.old[idx] == self.new[self.scan] {
-                score -= 1;
-            }
-            self.scan += 1;
+            prev_match = Some((self.scan, self.pos, self.len));
+            self.advance_scan(1, &mut score);
         }
         self.len != score || self.scan == self.new.len()
     }
@@ -375,5 +481,46 @@ impl<'a> ScanState<'a> {
             .checked_sub(self.scan as isize)
             .context("")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ScanState, LONG_SUFFIX};
+
+    fn naive_sa(old: &[u8]) -> Box<[u32]> {
+        let mut sa: Vec<u32> = (0..old.len() as u32).collect();
+        sa.sort_unstable_by_key(|&v| &old[v as usize..]);
+        sa.into_boxed_slice()
+    }
+
+    #[test]
+    fn repeated_suffix_matches_are_classified_as_redundant() {
+        let old = b"abcabcabcabcabcabc";
+        let new = b"xabcabcabcabcabcabcy";
+        let sa = naive_sa(old);
+        let scanner = ScanState::new(old, new, &sa);
+
+        let similar = scanner.similar_suffix_match(1, 0, old.len(), 4, old.len() - 3);
+
+        assert_eq!(similar, old.len() - 3);
+    }
+
+    #[test]
+    fn long_suffix_binary_search_skip_never_regresses_below_current_match() {
+        let old = vec![0u8; 4096];
+        let mut new = vec![1u8];
+        new.extend(std::iter::repeat_n(0u8, 3072));
+        new.push(2);
+
+        let sa = naive_sa(&old);
+        let scanner = ScanState::new(&old, &new, &sa);
+        let scan = 1;
+        let len = LONG_SUFFIX + 1;
+        let similar = scanner.similar_suffix_match(0, 0, old.len(), scan, new.len() - scan);
+        let step = scanner.binary_search_suffix_skip(0, 0, old.len(), scan, len, similar);
+
+        assert!(similar > len);
+        assert!(step > len);
     }
 }
