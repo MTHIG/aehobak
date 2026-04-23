@@ -32,7 +32,7 @@ mod encode;
 mod patch;
 
 pub use decode::decode;
-pub use diff::diff;
+pub use diff::{diff, diff_with_options, DiffOptions};
 pub use encode::encode;
 pub use patch::{patch, patch_into};
 
