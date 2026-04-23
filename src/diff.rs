@@ -29,10 +29,57 @@ use anyhow::{ensure, Context, Error, Result};
 use std::io;
 use std::io::Write;
 
+/// Tuning parameters for direct aehobak diff generation.
+///
+/// These values affect how aggressively candidate matches are skipped while
+/// scanning repeated or overlapping suffixes. Defaults preserve `diff` output
+/// behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiffOptions {
+    /// Candidate matches no longer than this are treated as small redundant
+    /// matches when they duplicate a previous suffix match.
+    pub small_match: usize,
+    /// Candidate matches within this many bytes of an existing similar suffix
+    /// match are treated as redundant.
+    pub mismatch_threshold: usize,
+    /// Redundant suffix matches longer than this may be skipped using an
+    /// additional binary search.
+    pub long_suffix: usize,
+}
+
+impl DiffOptions {
+    pub const DEFAULT_SMALL_MATCH: usize = 12;
+    pub const DEFAULT_MISMATCH_THRESHOLD: usize = 8;
+    pub const DEFAULT_LONG_SUFFIX: usize = 256;
+}
+
+impl Default for DiffOptions {
+    fn default() -> Self {
+        Self {
+            small_match: Self::DEFAULT_SMALL_MATCH,
+            mismatch_threshold: Self::DEFAULT_MISMATCH_THRESHOLD,
+            long_suffix: Self::DEFAULT_LONG_SUFFIX,
+        }
+    }
+}
+
 /// Directly generate a compact representation of bsdiff output.
 /// If numeric limits are reached, the error will be wrapped with `io::Error`.
 pub fn diff<T: Write>(old: &[u8], new: &[u8], writer: &mut T) -> io::Result<()> {
-    match diff_internal(old, new, writer) {
+    diff_with_options(old, new, writer, DiffOptions::default())
+}
+
+/// Directly generate a compact representation of bsdiff output with custom
+/// optimization parameters.
+///
+/// If numeric limits are reached, the error will be wrapped with `io::Error`.
+pub fn diff_with_options<T: Write>(
+    old: &[u8],
+    new: &[u8],
+    writer: &mut T,
+    options: DiffOptions,
+) -> io::Result<()> {
+    match diff_internal(old, new, writer, options) {
         Ok(_) => Ok(()),
         Err(e) => match e.downcast::<io::Error>() {
             Ok(e) => Err(e),
@@ -41,12 +88,17 @@ pub fn diff<T: Write>(old: &[u8], new: &[u8], writer: &mut T) -> io::Result<()> 
     }
 }
 
-fn diff_internal(old: &[u8], new: &[u8], writer: &mut dyn Write) -> Result<()> {
+fn diff_internal(
+    old: &[u8],
+    new: &[u8],
+    writer: &mut dyn Write,
+    options: DiffOptions,
+) -> Result<()> {
     #[cfg(miri)]
     let sa = suf_sort_naive(old)?;
     #[cfg(not(miri))]
     let sa = sais(old)?;
-    let mut scanner = ScanState::new(old, new, &sa);
+    let mut scanner = ScanState::new(old, new, &sa, options);
     let mut encoder = EncoderState::new(new.len());
 
     while !scanner.done() {
@@ -135,14 +187,11 @@ fn mismatch(old: &[u8], new: &[u8]) -> usize {
     i
 }
 
-const SMALL_MATCH: usize = 12;
-const MISMATCH_THRESHOLD: usize = 8;
-const LONG_SUFFIX: usize = 256;
-
 struct ScanState<'a> {
     sa: &'a [u32],
     old: &'a [u8],
     new: &'a [u8],
+    options: DiffOptions,
     scan: usize,
     len: usize,
     pos: usize,
@@ -153,11 +202,12 @@ struct ScanState<'a> {
 
 impl<'a> ScanState<'a> {
     #[inline(always)]
-    fn new(old: &'a [u8], new: &'a [u8], sa: &'a [u32]) -> Self {
+    fn new(old: &'a [u8], new: &'a [u8], sa: &'a [u32], options: DiffOptions) -> Self {
         Self {
             sa,
             old,
             new,
+            options,
             scan: 0,
             len: 0,
             pos: 0,
@@ -173,8 +223,10 @@ impl<'a> ScanState<'a> {
     }
 
     #[inline(always)]
-    fn match_is_redundant(len: usize, similar: usize) -> bool {
-        similar == len || len <= SMALL_MATCH || len <= similar + MISMATCH_THRESHOLD
+    fn match_is_redundant(&self, len: usize, similar: usize) -> bool {
+        similar == len
+            || len <= self.options.small_match
+            || len <= similar.saturating_add(self.options.mismatch_threshold)
     }
 
     fn find_best_match(&self) -> (usize, usize) {
@@ -272,7 +324,7 @@ impl<'a> ScanState<'a> {
         len: usize,
         similar: usize,
     ) -> usize {
-        if len <= LONG_SUFFIX || similar <= len {
+        if len <= self.options.long_suffix || similar <= len {
             return len;
         }
 
@@ -293,7 +345,7 @@ impl<'a> ScanState<'a> {
             let future_similar =
                 self.similar_suffix_match(prev_scan, prev_pos, prev_len, future_scan, future_len);
 
-            if future_len != 0 && Self::match_is_redundant(future_len, future_similar) {
+            if future_len != 0 && self.match_is_redundant(future_len, future_similar) {
                 best = mid;
                 low = mid + 1;
             } else {
@@ -335,7 +387,7 @@ impl<'a> ScanState<'a> {
             if let Some((prev_scan, prev_pos, prev_len)) = prev_match {
                 let similar =
                     self.similar_suffix_match(prev_scan, prev_pos, prev_len, self.scan, self.len);
-                if Self::match_is_redundant(self.len, similar) {
+                if self.match_is_redundant(self.len, similar) {
                     prev_match = Some((self.scan, self.pos, self.len));
                     let step = self.binary_search_suffix_skip(
                         prev_scan, prev_pos, prev_len, self.scan, self.len, similar,
@@ -486,7 +538,7 @@ impl<'a> ScanState<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ScanState, LONG_SUFFIX};
+    use super::{DiffOptions, ScanState};
 
     fn naive_sa(old: &[u8]) -> Box<[u32]> {
         let mut sa: Vec<u32> = (0..old.len() as u32).collect();
@@ -499,11 +551,51 @@ mod tests {
         let old = b"abcabcabcabcabcabc";
         let new = b"xabcabcabcabcabcabcy";
         let sa = naive_sa(old);
-        let scanner = ScanState::new(old, new, &sa);
+        let scanner = ScanState::new(old, new, &sa, DiffOptions::default());
 
         let similar = scanner.similar_suffix_match(1, 0, old.len(), 4, old.len() - 3);
 
         assert_eq!(similar, old.len() - 3);
+    }
+
+    #[test]
+    fn custom_small_match_controls_redundant_match_classification() {
+        let old = b"abc";
+        let new = b"abc";
+        let sa = naive_sa(old);
+        let scanner = ScanState::new(
+            old,
+            new,
+            &sa,
+            DiffOptions {
+                small_match: 3,
+                mismatch_threshold: 0,
+                ..DiffOptions::default()
+            },
+        );
+
+        assert!(scanner.match_is_redundant(3, 0));
+        assert!(!scanner.match_is_redundant(4, 0));
+    }
+
+    #[test]
+    fn custom_mismatch_threshold_controls_redundant_match_classification() {
+        let old = b"abc";
+        let new = b"abc";
+        let sa = naive_sa(old);
+        let scanner = ScanState::new(
+            old,
+            new,
+            &sa,
+            DiffOptions {
+                small_match: 0,
+                mismatch_threshold: 2,
+                ..DiffOptions::default()
+            },
+        );
+
+        assert!(scanner.match_is_redundant(7, 5));
+        assert!(!scanner.match_is_redundant(8, 5));
     }
 
     #[test]
@@ -514,13 +606,35 @@ mod tests {
         new.push(2);
 
         let sa = naive_sa(&old);
-        let scanner = ScanState::new(&old, &new, &sa);
+        let scanner = ScanState::new(&old, &new, &sa, DiffOptions::default());
         let scan = 1;
-        let len = LONG_SUFFIX + 1;
+        let len = DiffOptions::DEFAULT_LONG_SUFFIX + 1;
         let similar = scanner.similar_suffix_match(0, 0, old.len(), scan, new.len() - scan);
         let step = scanner.binary_search_suffix_skip(0, 0, old.len(), scan, len, similar);
 
         assert!(similar > len);
         assert!(step > len);
+    }
+
+    #[test]
+    fn custom_long_suffix_controls_binary_search_skip() {
+        let old = vec![0u8; 4096];
+        let mut new = vec![1u8];
+        new.extend(std::iter::repeat_n(0u8, 3072));
+        new.push(2);
+
+        let sa = naive_sa(&old);
+        let options = DiffOptions {
+            long_suffix: usize::MAX,
+            ..DiffOptions::default()
+        };
+        let scanner = ScanState::new(&old, &new, &sa, options);
+        let scan = 1;
+        let len = DiffOptions::DEFAULT_LONG_SUFFIX + 1;
+        let similar = scanner.similar_suffix_match(0, 0, old.len(), scan, new.len() - scan);
+        let step = scanner.binary_search_suffix_skip(0, 0, old.len(), scan, len, similar);
+
+        assert!(similar > len);
+        assert_eq!(step, len);
     }
 }
